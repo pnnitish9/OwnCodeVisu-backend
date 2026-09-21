@@ -418,7 +418,7 @@ class AdvancedPythonTracer:
             if not name.startswith("_") or name in {"__import__", "__build_class__"}
         }
         dangerous = {
-            "exec", "eval", "compile", "open", "__import__",
+            "exec", "eval", "compile", "open",
             "input",  # stdin is supplied up-front via user_input instead
             "breakpoint", "memoryview", "vars", "globals", "locals",
         }
@@ -436,6 +436,40 @@ class AdvancedPythonTracer:
             return line.rstrip("\n")
 
         safe["input"] = _scripted_input
+        
+        # Add a restricted __import__ that allows safe standard library modules
+        ALLOWED_MODULES = {
+            # Data structures
+            'collections', 'array', 'heapq', 'bisect', 'queue', 'enum',
+            # Math & numbers
+            'math', 'cmath', 'decimal', 'fractions', 'random', 'statistics',
+            # Strings & text
+            'string', 're', 'difflib', 'textwrap',
+            # Dates & times
+            'datetime', 'calendar', 'time',
+            # Iterators
+            'itertools', 'functools', 'operator',
+            # Algorithms
+            'copy', 'pprint',
+            # Data persistence (safe subset)
+            'json', 'base64', 'struct', 'codecs',
+            # Functional programming
+            'typing',
+        }
+        
+        def _safe_import(name, globals=None, locals=None, fromlist=(), level=0):
+            # Get the top-level module name (before any dots)
+            top_level = name.split('.')[0]
+            
+            if top_level not in ALLOWED_MODULES:
+                raise ImportError(
+                    f"Import of '{name}' is not allowed in the sandbox. "
+                    f"Only these modules are available: {', '.join(sorted(ALLOWED_MODULES))}"
+                )
+            
+            return builtins.__import__(name, globals, locals, fromlist, level)
+        
+        safe["__import__"] = _safe_import
         return safe
 
     def _step_to_dict(self, step: ExecutionStep) -> Dict:
