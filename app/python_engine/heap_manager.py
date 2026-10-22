@@ -123,11 +123,76 @@ class HeapManager:
         else:
             self._store_primitive(obj, heap_id)
 
+    def _detect_dimensions(self, obj):
+        """
+        Detect if a list/tuple is a regular 2D or 3D array (rectangular grid).
+        Returns a list [rows, cols] or [depth, rows, cols] if rectangular, else None.
+        """
+        if not isinstance(obj, (list, tuple)) or len(obj) == 0:
+            return None
+        
+        # Check if all elements are sequences (potential 2D array)
+        if not all(isinstance(item, (list, tuple)) for item in obj):
+            return None
+        
+        # Check for uniform row lengths (2D rectangular array)
+        first_row_len = len(obj[0]) if isinstance(obj[0], (list, tuple)) else None
+        if first_row_len is None:
+            return None
+        
+        if all(isinstance(row, (list, tuple)) and len(row) == first_row_len for row in obj):
+            # We have a 2D array
+            # Check if it's actually 3D (all rows contain uniform lists)
+            if first_row_len > 0 and all(isinstance(obj[0][j], (list, tuple)) for j in range(first_row_len)):
+                # Potential 3D array - check if all elements at [i][j] are lists of same length
+                first_depth_len = len(obj[0][0]) if isinstance(obj[0][0], (list, tuple)) else None
+                if first_depth_len is not None:
+                    is_3d = True
+                    for row in obj:
+                        if not isinstance(row, (list, tuple)) or len(row) != first_row_len:
+                            is_3d = False
+                            break
+                        for col in row:
+                            if not isinstance(col, (list, tuple)) or len(col) != first_depth_len:
+                                is_3d = False
+                                break
+                        if not is_3d:
+                            break
+                    
+                    if is_3d:
+                        # Check that innermost elements are primitives (not more nesting)
+                        all_primitives = True
+                        for layer in obj:
+                            for row in layer:
+                                for item in row:
+                                    if isinstance(item, (list, tuple)):
+                                        all_primitives = False
+                                        break
+                                if not all_primitives:
+                                    break
+                            if not all_primitives:
+                                break
+                        
+                        if all_primitives:
+                            return [len(obj), first_row_len, first_depth_len]  # [depth, rows, cols]
+            
+            # It's a 2D array (not 3D)
+            return [len(obj), first_row_len]  # [rows, cols]
+        
+        return None
+
     def _store_sequence(self, obj, heap_id, name, depth, visiting):
         n = len(obj)
         entry = {"type": "list" if isinstance(obj, list) else "tuple",
                   "label": f"{name or type(obj).__name__}[{n}]", "elements": [],
                   "mutable": isinstance(obj, list), "length": n}
+        
+        # Detect multidimensional array structure
+        dimensions = self._detect_dimensions(obj)
+        if dimensions:
+            entry["dimensions"] = dimensions
+            entry["is_matrix"] = True
+        
         shown = 0
         for i, item in enumerate(obj):
             if shown >= MAX_ELEMENTS:

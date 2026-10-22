@@ -111,6 +111,10 @@ class AdvancedPythonTracer:
         self.truncated = False
         self.truncation_reason = None
         self._deadline = None
+        # Recursion tracking
+        self.call_tree = []  # List of call nodes with parent-child relationships
+        self.call_id_counter = 0
+        self.active_calls = []  # Stack of active call IDs for building tree
 
     def trace(self, code: str, user_input: str = "") -> Dict:
         """Trace execution with full feature support. Raises SyntaxError
@@ -183,6 +187,7 @@ class AdvancedPythonTracer:
             "truncated": self.truncated,
             "truncation_reason": self.truncation_reason,
             "heap_truncated": self.heap.truncated,
+            "call_tree": self.call_tree,  # Add recursion tree data
         }
 
     def _append_truncation_step(self, message: str):
@@ -314,6 +319,24 @@ class AdvancedPythonTracer:
             if not name.startswith("__"):
                 args[name] = self.formatter.format_value(value, name)
 
+        # Build call tree for recursion visualization
+        self.call_id_counter += 1
+        call_id = self.call_id_counter
+        parent_id = self.active_calls[-1] if self.active_calls else None
+        
+        call_node = {
+            "call_id": call_id,
+            "parent_id": parent_id,
+            "function_name": func_name,
+            "args": args,
+            "step_id": self.step_counter,
+            "return_value": None,
+            "return_step_id": None,
+            "depth": len(self.active_calls),
+        }
+        self.call_tree.append(call_node)
+        self.active_calls.append(call_id)
+
         self.steps.append(ExecutionStep(
             step_id=self.step_counter,
             line=frame.f_lineno - 1,
@@ -335,6 +358,16 @@ class AdvancedPythonTracer:
             self.decorator_stack.pop()
 
         return_value = self.formatter.format_value(arg, "__return__")
+
+        # Update call tree with return value
+        if self.active_calls:
+            call_id = self.active_calls.pop()
+            # Find the call node and update its return info
+            for node in self.call_tree:
+                if node["call_id"] == call_id:
+                    node["return_value"] = return_value
+                    node["return_step_id"] = self.step_counter
+                    break
 
         self.steps.append(ExecutionStep(
             step_id=self.step_counter,
