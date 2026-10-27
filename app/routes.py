@@ -77,17 +77,47 @@ def trace_python():
     if len(user_input) > 50000:
         raise ValidationError("Field 'user_input' is too long.", type_="PayloadTooLarge")
 
+    # Allow clients to request extended limits for complex programs
+    # But cap at the configured maximum to prevent abuse
+    requested_limits = data.get("limits", {})
+    
+    max_steps = min(
+        requested_limits.get("max_steps", config.PY_MAX_STEPS),
+        config.PY_MAX_STEPS_EXTENDED
+    )
+    timeout_seconds = min(
+        requested_limits.get("timeout_seconds", config.PY_TIMEOUT_SECONDS),
+        config.PY_TIMEOUT_SECONDS_EXTENDED
+    )
+    max_memory_mb = min(
+        requested_limits.get("max_memory_mb", config.PY_MAX_MEMORY_MB),
+        config.PY_MAX_MEMORY_MB_EXTENDED
+    )
+    
     limits = {
-        "max_steps": config.PY_MAX_STEPS,
-        "timeout_seconds": config.PY_TIMEOUT_SECONDS,
+        "max_steps": max_steps,
+        "timeout_seconds": timeout_seconds,
         "max_output_chars": config.PY_MAX_OUTPUT_CHARS,
-        "max_memory_mb": config.PY_MAX_MEMORY_MB,
+        "max_memory_mb": max_memory_mb,
+        "enable_smart_snapshots": config.PY_ENABLE_SMART_SNAPSHOTS,
+        "snapshot_interval": config.PY_SNAPSHOT_INTERVAL,
+        "max_heap_objects": config.PY_MAX_HEAP_OBJECTS,
+        "enable_step_sampling": config.PY_ENABLE_STEP_SAMPLING,
+        "recursion_depth_threshold": config.PY_RECURSION_DEPTH_THRESHOLD,
     }
 
     outcome = py_sandbox.run_traced(code, user_input, limits)
 
     if outcome.ok:
-        return jsonify({"success": True, "data": outcome.result})
+        result = outcome.result
+        # Add limit info to response so frontend knows what was applied
+        result["limits_applied"] = {
+            "max_steps": max_steps,
+            "timeout_seconds": timeout_seconds,
+            "max_memory_mb": max_memory_mb,
+            "smart_snapshots_enabled": limits["enable_smart_snapshots"],
+        }
+        return jsonify({"success": True, "data": result})
 
     kind = outcome.error["kind"]
     if kind == "syntax_error":
@@ -100,14 +130,22 @@ def trace_python():
         )
     if kind == "memory_error":
         raise ResourceLimitExceeded(
-            "The program exceeded the memory limit and was stopped.",
-            hint="Check for unbounded data structures (e.g. a list that "
-                 "grows forever inside a loop).",
+            f"The program exceeded the {max_memory_mb}MB memory limit and was stopped.",
+            hint="Try requesting extended limits by passing \"limits\": {\"max_memory_mb\": 512} "
+                 "in the request body, or simplify your data structures.",
         )
     if kind == "hard_timeout":
-        raise ExecutionTimeout(outcome.error["message"])
+        raise ExecutionTimeout(
+            outcome.error["message"],
+            hint=f"The execution exceeded {timeout_seconds}s. Try requesting extended limits "
+                 "by passing \"limits\": {\"timeout_seconds\": 20} in the request body.",
+        )
     if kind == "killed":
-        raise ResourceLimitExceeded(outcome.error["message"])
+        raise ResourceLimitExceeded(
+            outcome.error["message"],
+            hint="The process was killed, likely due to memory exhaustion. "
+                 "Try requesting extended limits: \"limits\": {\"max_memory_mb\": 512, \"max_steps\": 50000}",
+        )
     if kind == "internal_error":
         payload = outcome.error["payload"]
         logger.error("Internal tracer error: %s\n%s", payload["message"], payload.get("traceback", ""))

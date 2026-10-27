@@ -46,6 +46,11 @@ def main():
             max_steps=limits["max_steps"],
             timeout_seconds=limits["timeout_seconds"],
             max_output_chars=limits["max_output_chars"],
+            enable_smart_snapshots=limits.get("enable_smart_snapshots", True),
+            snapshot_interval=limits.get("snapshot_interval", 50),
+            max_heap_objects=limits.get("max_heap_objects", 2000),
+            enable_step_sampling=limits.get("enable_step_sampling", False),
+            recursion_depth_threshold=limits.get("recursion_depth_threshold", 10),
         )
         result = tracer.trace(code, user_input)
         json.dump({"kind": "ok", "payload": result}, sys.stdout)

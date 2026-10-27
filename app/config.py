@@ -49,11 +49,26 @@ class Config:
 
     # ---- Python engine ----
     PY_MAX_CODE_LENGTH = _int_env("PY_MAX_CODE_LENGTH", 20000)
+    
+    # Default trace limits (conservative for general use)
     PY_MAX_STEPS = _int_env("PY_MAX_STEPS", 15000)
     PY_TIMEOUT_SECONDS = _float_env("PY_TIMEOUT_SECONDS", 6)
     PY_MAX_OUTPUT_CHARS = _int_env("PY_MAX_OUTPUT_CHARS", 200000)
     PY_MAX_MEMORY_MB = _int_env("PY_MAX_MEMORY_MB", 256)
     PY_MAX_USER_INPUTS = _int_env("PY_MAX_USER_INPUTS", 200)
+    
+    # Extended limits for complex programs (can be requested via API)
+    # These are absolute maximums that even explicit requests cannot exceed
+    PY_MAX_STEPS_EXTENDED = _int_env("PY_MAX_STEPS_EXTENDED", 50000)
+    PY_TIMEOUT_SECONDS_EXTENDED = _float_env("PY_TIMEOUT_SECONDS_EXTENDED", 20)
+    PY_MAX_MEMORY_MB_EXTENDED = _int_env("PY_MAX_MEMORY_MB_EXTENDED", 512)
+    
+    # Smart tracing optimizations
+    PY_ENABLE_SMART_SNAPSHOTS = os.environ.get("PY_ENABLE_SMART_SNAPSHOTS", "true").lower() == "true"
+    PY_SNAPSHOT_INTERVAL = _int_env("PY_SNAPSHOT_INTERVAL", 50)  # Full heap snapshot every N steps
+    PY_MAX_HEAP_OBJECTS = _int_env("PY_MAX_HEAP_OBJECTS", 2000)
+    PY_ENABLE_STEP_SAMPLING = os.environ.get("PY_ENABLE_STEP_SAMPLING", "false").lower() == "true"
+    PY_RECURSION_DEPTH_THRESHOLD = _int_env("PY_RECURSION_DEPTH_THRESHOLD", 10)  # When to start sampling
 
     # ---- C++ engine ----
     CPP_MAX_CODE_LENGTH = _int_env("CPP_MAX_CODE_LENGTH", 20000)

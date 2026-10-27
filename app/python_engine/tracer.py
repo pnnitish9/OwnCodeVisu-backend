@@ -87,19 +87,29 @@ class ExecutionStep:
 
 class AdvancedPythonTracer:
     """Enhanced Python tracer supporting classes, generators, decorators,
-    with built-in resource guards."""
+    with built-in resource guards and smart heap snapshots."""
 
     def __init__(self, max_steps: int = DEFAULT_MAX_STEPS,
                  timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
-                 max_output_chars: int = DEFAULT_MAX_OUTPUT_CHARS):
+                 max_output_chars: int = DEFAULT_MAX_OUTPUT_CHARS,
+                 enable_smart_snapshots: bool = True,
+                 snapshot_interval: int = 50,
+                 max_heap_objects: int = 2000,
+                 enable_step_sampling: bool = False,
+                 recursion_depth_threshold: int = 10):
         self.max_steps = max_steps
         self.timeout_seconds = timeout_seconds
         self.max_output_chars = max_output_chars
+        self.enable_smart_snapshots = enable_smart_snapshots
+        self.snapshot_interval = snapshot_interval
+        self.max_heap_objects = max_heap_objects
+        self.enable_step_sampling = enable_step_sampling
+        self.recursion_depth_threshold = recursion_depth_threshold
         self._reset_state()
 
     def _reset_state(self):
         self.steps: List[ExecutionStep] = []
-        self.heap = HeapManager()
+        self.heap = HeapManager(max_objects=self.max_heap_objects)
         self.formatter = ValueFormatter(self.heap)
         self.source_lines = []
         self.step_counter = 0
@@ -115,6 +125,10 @@ class AdvancedPythonTracer:
         self.call_tree = []  # List of call nodes with parent-child relationships
         self.call_id_counter = 0
         self.active_calls = []  # Stack of active call IDs for building tree
+        # Smart snapshot tracking
+        self.last_full_snapshot_step = 0
+        self.heap_snapshot_cache = {}  # Cache heap state for differential updates
+        self.step_sampling_counter = 0
 
     def trace(self, code: str, user_input: str = "") -> Dict:
         """Trace execution with full feature support. Raises SyntaxError
@@ -150,18 +164,20 @@ class AdvancedPythonTracer:
         except _StepLimitExceeded:
             self.truncated = True
             self.truncation_reason = "step_limit"
-            self._append_truncation_step(
-                f"Trace stopped after {self.max_steps:,} steps to protect "
-                "the server. This usually means an infinite (or very long) "
-                "loop."
+            actual_steps = len(self.steps)
+            msg = (
+                f"Trace stopped after {actual_steps:,} steps (limit: {self.max_steps:,}) "
+                "to protect server resources."
             )
+            if self.enable_step_sampling:
+                msg += f" Step sampling was enabled at depth {self.recursion_depth_threshold}."
+            self._append_truncation_step(msg)
         except _ExecutionTimedOut:
             self.truncated = True
             self.truncation_reason = "timeout"
             self._append_truncation_step(
-                f"Execution stopped after exceeding the {self.timeout_seconds:g}s "
-                "time limit. This usually means an infinite loop or a very "
-                "slow computation."
+                f"Execution stopped after {self.timeout_seconds:g}s time limit. "
+                f"Completed {len(self.steps):,} steps before timeout."
             )
         except _OutputLimitExceeded as exc:
             self.truncated = True
@@ -187,18 +203,62 @@ class AdvancedPythonTracer:
             "truncated": self.truncated,
             "truncation_reason": self.truncation_reason,
             "heap_truncated": self.heap.truncated,
-            "call_tree": self.call_tree,  # Add recursion tree data
+            "call_tree": self.call_tree,
+            # Optimization metadata
+            "smart_snapshots_enabled": self.enable_smart_snapshots,
+            "snapshot_interval": self.snapshot_interval if self.enable_smart_snapshots else None,
+            "step_sampling_enabled": self.enable_step_sampling,
+            "step_sampling_applied": self.enable_step_sampling and len(self.active_calls) >= self.recursion_depth_threshold,
+            "max_recursion_depth": max((len(self.active_calls), max((call.get("depth", 0) for call in self.call_tree), default=0)), default=0),
         }
 
     def _append_truncation_step(self, message: str):
+        """Append a special step indicating trace was truncated with helpful context."""
         self.step_counter += 1
+        
+        # Provide context about what was happening when limit hit
+        context_info = []
+        if self.call_stack:
+            context_info.append(f"Inside function: {self.call_stack[-1]}")
+        if self.active_calls:
+            context_info.append(f"Recursion depth: {len(self.active_calls)}")
+        if self.steps:
+            last_step = self.steps[-1]
+            if last_step.line >= 0 and last_step.line < len(self.source_lines):
+                context_info.append(f"Last line: {self.source_lines[last_step.line].strip()}")
+        
+        full_message = message
+        if context_info:
+            full_message += "\n\nContext: " + " | ".join(context_info)
+        
+        # Add helpful suggestions based on truncation reason
+        if self.truncation_reason == "step_limit":
+            full_message += (
+                f"\n\n💡 Suggestions:\n"
+                f"• For recursive algorithms, try requesting extended limits\n"
+                f"• Check for infinite loops in your code\n"
+                f"• Consider enabling step sampling for deep recursion"
+            )
+        elif self.truncation_reason == "timeout":
+            full_message += (
+                f"\n\n💡 Suggestions:\n"
+                f"• Request extended timeout limits for complex algorithms\n"
+                f"• Optimize your algorithm's time complexity\n"
+                f"• Use smaller test inputs during development"
+            )
+        
         self.steps.append(ExecutionStep(
             step_id=self.step_counter,
             line=-1,
             code=f"⚠ {message}",
             function_name=self.call_stack[-1] if self.call_stack else "<module>",
             event="exception",
-            exception_info={"type": "ExecutionLimit", "message": message},
+            exception_info={
+                "type": "ExecutionLimit",
+                "message": full_message,
+                "category": self.truncation_reason,
+                "context": context_info,
+            },
         ))
 
     def _check_limits(self):
@@ -229,6 +289,10 @@ class AdvancedPythonTracer:
 
     def _capture_line_step(self, frame):
         line_no = frame.f_lineno
+        
+        # Check if we should skip this step due to deep recursion sampling
+        if self._should_skip_step_sampling():
+            return
 
         if "self" in frame.f_locals and self.class_context is None:
             self.class_context = type(frame.f_locals["self"]).__name__
@@ -291,7 +355,7 @@ class AdvancedPythonTracer:
             function_name=self.call_stack[-1] if self.call_stack else "<module>",
             event="line",
             stack_locals=stack_locals,
-            heap_state=self.heap.get_all_objects(),
+            heap_state=self._get_heap_snapshot(),
             changed_vars=changed_vars,
             class_name=self.class_context,
             is_generator=is_generator,
@@ -344,7 +408,7 @@ class AdvancedPythonTracer:
             function_name=func_name,
             event="call",
             stack_locals=args,
-            heap_state=self.heap.get_all_objects(),
+            heap_state=self._get_heap_snapshot(),
             changed_vars=[],
             class_name=class_name,
             decorator_chain=list(self.decorator_stack),
@@ -376,7 +440,7 @@ class AdvancedPythonTracer:
             function_name=func_name,
             event="return",
             stack_locals={"__return__": return_value},
-            heap_state=self.heap.get_all_objects(),
+            heap_state=self._get_heap_snapshot(),
             changed_vars=["__return__"],
             class_name=self.class_context,
             decorator_chain=list(self.decorator_stack),
@@ -428,6 +492,76 @@ class AdvancedPythonTracer:
         if len(text) > 4000:
             text = text[:4000] + "\n... (truncated)"
         return text
+
+    def _should_skip_step_sampling(self) -> bool:
+        """Determine if we should skip this step due to deep recursion sampling.
+        This prevents exponential step growth in deep recursive algorithms."""
+        if not self.enable_step_sampling:
+            return False  # Sampling disabled, capture all steps
+        
+        # Get current recursion depth
+        recursion_depth = len(self.active_calls)
+        
+        # Only sample if we're deep in recursion
+        if recursion_depth < self.recursion_depth_threshold:
+            return False  # Not deep enough, capture normally
+        
+        # Use increasingly aggressive sampling as recursion deepens
+        # At threshold: capture every 2nd step
+        # At threshold+5: capture every 4th step
+        # At threshold+10: capture every 8th step, etc.
+        depth_excess = recursion_depth - self.recursion_depth_threshold
+        sample_rate = 2 ** min(depth_excess // 5, 4)  # Cap at every 16th step
+        
+        self.step_sampling_counter += 1
+        should_skip = (self.step_sampling_counter % sample_rate) != 0
+        
+        # Always capture call and return events even when sampling
+        if self.steps and self.steps[-1].event in ("call", "return"):
+            return False
+        
+        return should_skip
+
+    def _should_capture_full_snapshot(self) -> bool:
+        """Determine if we should capture a full heap snapshot at this step.
+        Uses smart sampling to reduce memory usage while keeping key transitions."""
+        if not self.enable_smart_snapshots:
+            return True  # Always capture full snapshot if optimization disabled
+        
+        # Always capture on first step
+        if self.step_counter == 1:
+            return True
+        
+        # Always capture on call/return events (state transitions)
+        if self.steps and self.steps[-1].event in ("call", "return"):
+            return True
+        
+        # Capture periodically based on interval
+        steps_since_snapshot = self.step_counter - self.last_full_snapshot_step
+        if steps_since_snapshot >= self.snapshot_interval:
+            return True
+        
+        # Capture when variables change (important state change)
+        if self.steps and self.steps[-1].changed_vars:
+            # But not every single change - only after several changes or periodic
+            if steps_since_snapshot >= max(10, self.snapshot_interval // 5):
+                return True
+        
+        return False
+
+    def _get_heap_snapshot(self) -> Dict[int, Dict]:
+        """Get heap snapshot - either full or differential based on smart snapshot strategy."""
+        should_full = self._should_capture_full_snapshot()
+        
+        if should_full:
+            self.last_full_snapshot_step = self.step_counter
+            snapshot = self.heap.get_all_objects()
+            self.heap_snapshot_cache = snapshot.copy()
+            return snapshot
+        else:
+            # Return reference to last full snapshot to avoid duplication
+            # Frontend will handle reconstruction
+            return {"_snapshot_ref": self.last_full_snapshot_step}
 
     def _hash_state(self, state: Dict) -> Dict:
         return {k: str(v.get("value", v.get("heap_ref", ""))) for k, v in state.items()}

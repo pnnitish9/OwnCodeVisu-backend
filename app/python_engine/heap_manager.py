@@ -45,11 +45,12 @@ class HeapManager:
     never produces an unbounded response, and refreshed on every visit so
     mutable-object mutation is reflected at every step."""
 
-    def __init__(self):
+    def __init__(self, max_objects: int = MAX_HEAP_OBJECTS):
         self.objects: Dict[int, int] = {}   # python id() -> stable heap id
         self.heap: Dict[int, dict] = {}      # heap id -> rendered contents
         self.id_counter = itertools.count(1)
         self.truncated = False
+        self.max_objects = max_objects
 
     def add_object(self, obj: Any, object_name: str = "", _depth: int = 0,
                     _visiting: Optional[Set[int]] = None) -> int:
@@ -69,7 +70,7 @@ class HeapManager:
             return self.objects.get(obj_id) or self._register_new_id(obj_id)
 
         already_known = obj_id in self.objects
-        if not already_known and len(self.heap) >= MAX_HEAP_OBJECTS:
+        if not already_known and len(self.heap) >= self.max_objects:
             self.truncated = True
             heap_id = self._register_new_id(obj_id)
             self.heap[heap_id] = {
