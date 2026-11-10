@@ -11,7 +11,7 @@ import inspect
 from .heap_manager import HeapManager, MAX_REPR_LEN
 
 MAX_STRING_DISPLAY = 200
-MAX_ITER_PREVIEW = 3
+MAX_ITER_PREVIEW = 6   # show up to 6 entries/items in previews
 
 
 def _safe(fn, fallback):
@@ -135,7 +135,7 @@ class ValueFormatter:
             if isinstance(obj, (list, tuple)):
                 if len(obj) == 0:
                     return "[]" if isinstance(obj, list) else "()"
-                preview = [repr(x)[:15] for x in list(obj)[:MAX_ITER_PREVIEW]]
+                preview = [repr(x)[:40] for x in list(obj)[:MAX_ITER_PREVIEW]]
                 suffix = ", ..." if len(obj) > MAX_ITER_PREVIEW else ""
                 bracket = "[]" if isinstance(obj, list) else "()"
                 return f'{bracket[0]}{", ".join(preview)}{suffix}{bracket[1]}'
@@ -143,15 +143,31 @@ class ValueFormatter:
                 if len(obj) == 0:
                     return "{}"
                 items = list(obj.items())[:MAX_ITER_PREVIEW]
-                preview = [f"{repr(k)[:10]}: {repr(v)[:10]}" for k, v in items]
+                # Use repr for key but cap it cleanly; for the value build a
+                # safe repr that never cuts mid-structure (list/dict/etc.)
+                parts = []
+                for k, v in items:
+                    k_repr = repr(k)
+                    # Build a compact but complete value representation
+                    if isinstance(v, (list, tuple)):
+                        inner = [repr(x) for x in list(v)[:5]]
+                        v_repr = ('[' if isinstance(v, list) else '(') + \
+                                 ', '.join(inner) + \
+                                 (', ...' if len(v) > 5 else '') + \
+                                 (']' if isinstance(v, list) else ')')
+                    elif isinstance(v, dict):
+                        v_repr = f'{{...{len(v)}}}'
+                    else:
+                        v_repr = repr(v)[:30]
+                    parts.append(f"{k_repr}: {v_repr}")
                 suffix = ", ..." if len(obj) > MAX_ITER_PREVIEW else ""
-                return f'{{{", ".join(preview)}{suffix}}}'
+                return f'{{{", ".join(parts)}{suffix}}}'
             elif isinstance(obj, (set, frozenset)):
                 if len(obj) == 0:
                     return "set()" if isinstance(obj, set) else "frozenset()"
-                preview = [repr(x)[:15] for x in list(obj)[:MAX_ITER_PREVIEW]]
+                preview = [repr(x)[:40] for x in list(obj)[:MAX_ITER_PREVIEW]]
                 suffix = ", ..." if len(obj) > MAX_ITER_PREVIEW else ""
                 return f'{{{", ".join(preview)}{suffix}}}'
-            return str(obj)[:50]
+            return str(obj)[:80]
         except Exception:
             return f"<{type(obj).__name__}>"
