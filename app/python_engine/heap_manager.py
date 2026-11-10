@@ -109,7 +109,8 @@ class HeapManager:
         return heap_id
 
     def _render(self, obj, heap_id, name, depth, visiting):
-        if isinstance(obj, (list, tuple)):
+        from collections import deque as _deque
+        if isinstance(obj, (list, tuple, _deque)):
             self._store_sequence(obj, heap_id, name, depth, visiting)
         elif isinstance(obj, dict):
             self._store_dict(obj, heap_id, name, depth, visiting)
@@ -183,10 +184,17 @@ class HeapManager:
         return None
 
     def _store_sequence(self, obj, heap_id, name, depth, visiting):
+        from collections import deque as _deque
         n = len(obj)
-        entry = {"type": "list" if isinstance(obj, list) else "tuple",
-                  "label": f"{name or type(obj).__name__}[{n}]", "elements": [],
-                  "mutable": isinstance(obj, list), "length": n}
+        if isinstance(obj, _deque):
+            seq_type = "deque"
+        elif isinstance(obj, tuple):
+            seq_type = "tuple"
+        else:
+            seq_type = "list"
+        entry = {"type": seq_type,
+                  "label": f"{name or seq_type}[{n}]", "elements": [],
+                  "mutable": seq_type != "tuple", "length": n}
         
         # Detect multidimensional array structure
         dimensions = self._detect_dimensions(obj)
@@ -322,7 +330,8 @@ class HeapManager:
         self.heap[heap_id] = {"type": type(obj).__name__, "value": _safe_repr(obj)}
 
     def _is_heap_type(self, obj: Any) -> bool:
-        return isinstance(obj, (list, dict, set, frozenset, tuple)) or (
+        from collections import deque as _deque
+        return isinstance(obj, (list, dict, set, frozenset, tuple, _deque)) or (
             hasattr(obj, "__dict__") and not isinstance(obj, (str, int, float, bool, type(None), type))
         )
 

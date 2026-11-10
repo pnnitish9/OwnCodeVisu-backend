@@ -56,7 +56,9 @@ class ValueFormatter:
             return self._format_generator(value, name)
         elif hasattr(value, "__iter__") and hasattr(value, "__next__") and not isinstance(value, (list, tuple, dict, set)):
             return self._format_iterator(value, name)
-        elif isinstance(value, (list, tuple, dict, set, frozenset)):
+        elif isinstance(value, (list, tuple, dict, set, frozenset)) or (
+            hasattr(value, '__iter__') and type(value).__name__ in ('deque', 'Counter', 'OrderedDict', 'defaultdict')
+        ) and not isinstance(value, str):
             return self._format_container(value, name)
         elif hasattr(value, "__dict__"):
             return self._format_object(value, name)
